@@ -11,7 +11,8 @@
 typedef std::uint8_t buf_type;
 
 /**
- * @brief A struct to hold decoded audio information from read_audio_info_buffer()
+ * @brief A struct to hold decoded audio information from read_audio_info_buffer().
+ * FFMPEG documentation https://ffmpeg.org/doxygen/trunk/index.html
  */
 struct audio_info{
     std::basic_stringstream<buf_type>* buffer;
