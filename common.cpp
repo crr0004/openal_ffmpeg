@@ -145,8 +145,6 @@ std::basic_stringstream<buf_type>* decode(
         );
         format_av_error(ret);
 
-        dump_av_opt(swr);
-
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
             break;
         else if (ret < 0) {
