@@ -9,22 +9,15 @@ int main(int argc, char const *argv[])
     std::uint8_t *out;
     std::size_t outSize;
 
-    auto stream = read_audio_into_buffer(
-            "airtoneresonance1.mp3"
+    audio_info *stream = read_audio_into_buffer(
+            "short.mp3"
         );
-    std::cout << stream->buffer->tellp() << std::endl;
-    // std::basic_stringstream<uint8_t> stream;
-    // stream.put(42);
-    // stream.put(10);
-    // stream.put(4);
-    // stream.flush();
 
-    // stream.seekg(0);
-    // do{
-    //     uint8_t out;
-    //     stream.read(&out, 1);
-    //     std::cout << out << ", ";
-    // }while(stream.eof());
+    init_openal();
+    ALuint sound_buffer = load_sound(*stream);
+    play_sound(sound_buffer);
+    alDeleteBuffers(1, &sound_buffer);
+    close_openal();
 
     return 0;
 }

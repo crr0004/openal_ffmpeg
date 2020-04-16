@@ -17,9 +17,12 @@ extern "C"{
 #include <libswresample/swresample.h>
 }
 
+AVSampleFormat OUT_FORMAT = AV_SAMPLE_FMT_S16;
+ALenum AL_OUT_FORMAT = AL_FORMAT_STEREO16;
+
 void format_av_error(int ret){
     // Only want to trigger this on unhandable errors
-	if(ret != 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF){
+	if(ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF){
 		char errbuff[1028];
 		av_strerror(ret, errbuff, 1028);
 		fprintf(stderr, "Error message (%d): %s\n", ret, errbuff);
@@ -33,7 +36,19 @@ void format_av_error(void* pointer, const char* error_msg){
     }
 }
 
-std::basic_stringstream<std::uint16_t>* decode(
+void dump_av_opt(void* ctx){
+
+    AVSampleFormat fmt;
+    av_opt_get_sample_fmt(ctx, "out_sample_fmt", 0, &fmt);
+    const char * out_fmt_name = av_get_sample_fmt_name(fmt);
+    printf("Out format %s\n", out_fmt_name);
+
+    av_opt_get_sample_fmt(ctx, "in_sample_fmt", 0, &fmt);
+    const char * in_fmt_name = av_get_sample_fmt_name(fmt);
+    printf("in format %s\n", in_fmt_name);
+}
+
+std::basic_stringstream<buf_type>* decode(
         AVCodecContext *dec_ctx,
         AVFormatContext *form_ctx,
         SwrContext *swr) {
@@ -50,15 +65,12 @@ std::basic_stringstream<std::uint16_t>* decode(
 
     */
 
-    int i, ch = 0;
-    int ret, data_size = 0;
+    int ret = 0;
 
     AVPacket *pkt = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
-    AVFrame *outFrame = av_frame_alloc();
-
     /* 
-    Grab our first packet from the file
+        Grab our first packet from the file
     */
     ret = av_read_frame(form_ctx, pkt);
     format_av_error(ret);
@@ -66,9 +78,18 @@ std::basic_stringstream<std::uint16_t>* decode(
     ret = avcodec_send_packet(dec_ctx, pkt);
     format_av_error(ret);
 
+    // Pointers for our data buffers for the converter to write into
+    uint8_t *outData;
+    int lineSize;
+
+    // Keeping track if the amount of frames decoded changes
+    int last_nb_samples = 0;
+
     /* read all the output frames (in general there may be any number of them */
-    std::basic_stringstream<std::uint16_t> *stream = new std::basic_stringstream<std::uint16_t>();
+    std::basic_stringstream<buf_type> *stream = new std::basic_stringstream<buf_type>();
     bool is_eof = false;
+
+    ret = 0; // Clear the error number so it's not confused
     while (ret >= 0 && !is_eof) {
         do{
             if(ret == AVERROR(EAGAIN)){
@@ -89,47 +110,52 @@ std::basic_stringstream<std::uint16_t>* decode(
             // This spits out EAGAIN when it needs another frame from the packet stream
             ret = avcodec_receive_frame(dec_ctx, frame);
         }while(ret == AVERROR(EAGAIN));
-        format_av_error(ret);
+
         if(is_eof){
             // TODO Again lift this break out of the loop so the file reading is done properly
             break;
         }
-
-        // Copy the frame properties as that is what SWR wants
-        // https://ffmpeg.org/doxygen/trunk/group__lswr.html#gac482028c01d95580106183aa84b0930c
-        outFrame->channel_layout = frame->channel_layout;
-        outFrame->sample_rate = frame->sample_rate;
-        outFrame->format = frame->format;
+        
+        // If the frame amount has changed, we need to re-allocate our buffer
+        if(frame->nb_samples != last_nb_samples){
+            ret = av_samples_alloc(
+                &outData,
+                &lineSize,
+                // As we are only doing alignment conversion keep we can cheat here
+                // by using the de-coded frame settings. Normally you have to figure this out
+                // by using the format changes. E.G Upsampling sample rate
+                frame->channels, 
+                frame->nb_samples,
+                OUT_FORMAT,
+                0);
+                last_nb_samples = frame->nb_samples;
+        }
 
         // Convert our frame to what we want through SWR
-        ret = swr_convert_frame(swr, outFrame, frame);
+        const uint8_t** inBuf = (const uint8_t**)(frame->extended_data);
         format_av_error(ret);
+        // Convert the audio to correct PCM format
+        ret = swr_convert(
+            swr,
+            &outData,
+            // Again cheating the samples because we keep the same sample rate when converting
+            frame->nb_samples,
+            inBuf,
+            frame->nb_samples
+        );
+        format_av_error(ret);
+
+        dump_av_opt(swr);
 
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
             break;
         else if (ret < 0) {
             format_av_error(ret);
         }
-        // ret = avresample_convert_frame(avr, outFrame, frame);
-
-        // data_size = av_get_bytes_per_sample(dec_ctx->sample_fmt);
-        // if (data_size < 1) {
-        //     format_av_error(nullptr, "Could not get size of sample");
-        // }
 
         // We only care about the first channel because the data is converted to packed
-        size_t size = outFrame->linesize[0]/sizeof(std::uint16_t);
-        stream->write((std::uint16_t*)frame->data[0], size);
-        // for (i = 0; i < outFrame->nb_samples; i++){
-        //         // fwrite(frame->data[ch] + data_size*i, 1, data_size, outfile);
-        //         // stream->write(frame->data[ch], data_size);
-        //         // std::cout << stream->tellg();
-        //         // std::cout << "C" << 0 << ": " << size << std::endl;
-        //         for(int j = 0; j < size; j++){
-        //             // std::cout << "" << ((std::uint16_t)outFrame->data[0][j]) << ", ";
-        //         } 
-        //         // std::cout << std::endl;
-        // }
+        size_t size = lineSize;
+        stream->write(outData, size);
     }
     return stream;
 }
@@ -165,7 +191,12 @@ audio_info* read_audio_into_buffer(const char* filename) {
     int ret = 0;    
 
 
+    // Auto figure out the codec and audio settings
 	ret = avformat_open_input(&avFormatContext, filename, NULL, NULL);
+	format_av_error(ret);
+
+    // Ensure the codecs are actually decoded by reading the headers
+    ret = avformat_find_stream_info(avFormatContext, NULL);
 	format_av_error(ret);
 
 	dump_format_context(avFormatContext);
@@ -188,14 +219,18 @@ audio_info* read_audio_into_buffer(const char* filename) {
     ret = avcodec_open2(c, codec, NULL);
     format_av_error(ret);
 
-    // Set the audio conversion options so it can be pushed into OpenAL
-    // OpenAL needs PCM (packed) mono or stero, 8 or 16 bit
-    // we just sample to stero for simplicity
-    // See https://ffmpeg.org/doxygen/trunk/group__lswr.html for all the options
+/*
+    Set the audio conversion options so it can be pushed into OpenAL
+    OpenAL needs PCM (packed) mono or stero, 8 or 16 bit
+    we just sample to stero for simplicity and keep all the incoming audio settings.
+    If you wish to change the settings for sample rate changes, or layout changes,
+    then changes to the decode method need to account for this
+    See https://ffmpeg.org/doxygen/trunk/group__lswr.html for all the options
+*/
     SwrContext *swr = swr_alloc_set_opts(
         NULL,
         AV_CH_LAYOUT_STEREO,
-        AV_SAMPLE_FMT_S16,
+        OUT_FORMAT,
         codec_context->sample_rate,
         codec_context->channel_layout,
         (AVSampleFormat)codec_context->format,
@@ -203,22 +238,159 @@ audio_info* read_audio_into_buffer(const char* filename) {
         0,
         NULL 
     );
+    swr_init(swr);
     format_av_error(swr, "Something went wrong with allocating resample context");
+    dump_av_opt(swr);
 
     
     // Heap create this so we can return it out
-    std::basic_stringstream<std::uint16_t> *stream = decode(c, avFormatContext, swr);
+    std::basic_stringstream<buf_type> *stream = decode(c, avFormatContext, swr);
+    stream->flush();
+    stream->seekg(0);
 
     // Create a struct so we can return out some information
     // in a format neutral way
     // We allocate on the heap so it doesn't get deleted when we return
     audio_info *info = new audio_info;
     info->buffer = stream;
-    info->sample_rate = 44100;
-    info->format = av_get_sample_fmt_name(AV_SAMPLE_FMT_S16);
+    info->sample_rate = codec_context->sample_rate;
+    info->format = av_get_sample_fmt_name(OUT_FORMAT);
+    info->buffer_size = stream->tellp();
 
+    swr_close(swr);
     avcodec_free_context(&c);
     avformat_free_context(avFormatContext);
 
     return info;
 };
+
+
+// OpenAL Below here
+#include "AL/al.h"
+#include "AL/alc.h"
+#include <assert.h>
+
+/* LoadBuffer loads the named audio file into an OpenAL buffer object, and
+ * returns the new buffer ID.
+ */
+ALuint load_sound(audio_info info) {
+    ALenum err, format;
+    ALuint buffer;
+    const buf_type *membuf;
+    ALsizei num_bytes;
+
+    // Double check we are at the start of the buffer
+    info.buffer->seekg(0);
+
+    // For some reason, we need to grab the buffer THEN get the underlying pointer
+    auto p = info.buffer->rdbuf()->str();
+    membuf = p.c_str();
+
+    /* Buffer the audio data into a new buffer object, then free the data and
+     * close the file.
+     */
+    buffer = 0;
+    alGenBuffers(1, &buffer);
+    alBufferData(
+            buffer, 
+            AL_OUT_FORMAT,
+            membuf, 
+            info.buffer_size, 
+            info.sample_rate
+        );
+
+    /* Check if an error occured, and clean up if so. */
+    err = alGetError();
+    if(err != AL_NO_ERROR)
+    {
+        fprintf(stderr, "OpenAL Error: %s\n", alGetString(err));
+        if(buffer && alIsBuffer(buffer))
+            alDeleteBuffers(1, &buffer);
+        return 0;
+    }
+
+    return buffer;
+}
+
+ALCcontext* init_openal(){
+    const ALCchar *name;
+    ALCdevice *device;
+    ALCcontext *ctx;
+
+    /* Open and initialize a device */
+    device = NULL;
+    device = alcOpenDevice(NULL);
+    if(!device)
+    {
+        fprintf(stderr, "Could not open a device!\n");
+        return nullptr;
+    }
+
+    ctx = alcCreateContext(device, NULL);
+    if(ctx == NULL || alcMakeContextCurrent(ctx) == ALC_FALSE)
+    {
+        if(ctx != NULL)
+            alcDestroyContext(ctx);
+        alcCloseDevice(device);
+        fprintf(stderr, "Could not set a context!\n");
+        return nullptr;
+    }
+
+    name = NULL;
+    if(alcIsExtensionPresent(device, "ALC_ENUMERATE_ALL_EXT"))
+        name = alcGetString(device, ALC_ALL_DEVICES_SPECIFIER);
+    if(!name || alcGetError(device) != AL_NO_ERROR)
+        name = alcGetString(device, ALC_DEVICE_SPECIFIER);
+    printf("Opened \"%s\"\n", name);
+    return ctx;
+}
+void al_nssleep(unsigned long nsec){
+    struct timespec ts, rem;
+    ts.tv_sec = (time_t)(nsec / 1000000000ul);
+    ts.tv_nsec = (long)(nsec % 1000000000ul);
+    while(nanosleep(&ts, &rem) == -1 && errno == EINTR)
+        ts = rem;
+}
+
+void play_sound(ALuint buffer){
+    ALuint source = 0;
+    ALenum state;
+    ALfloat offset;
+    alGenSources(1, &source);
+    alSourcei(source, AL_BUFFER, (ALint)buffer);
+    assert(alGetError()==AL_NO_ERROR && "Failed to setup sound source");
+
+    /* Play the sound until it finishes. */
+    alSourcePlay(source);
+    do {
+        al_nssleep(10000000);
+        alGetSourcei(source, AL_SOURCE_STATE, &state);
+
+        /* Get the source offset. */
+        alGetSourcef(source, AL_SEC_OFFSET, &offset);
+        printf("\rOffset: %f  ", offset);
+        fflush(stdout);
+    } while(alGetError() == AL_NO_ERROR && state == AL_PLAYING);
+    printf("\n");
+    alDeleteSources(1, &source);
+}
+
+void delete_openal_source(ALuint source, ALuint buffer){
+    alDeleteBuffers(1, &buffer);
+}
+
+void close_openal(){
+    ALCdevice *device;
+    ALCcontext *ctx;
+
+    ctx = alcGetCurrentContext();
+    if(ctx == NULL)
+        return;
+
+    device = alcGetContextsDevice(ctx);
+
+    alcMakeContextCurrent(NULL);
+    alcDestroyContext(ctx);
+    alcCloseDevice(device);
+}
+
