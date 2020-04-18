@@ -186,7 +186,7 @@ audio_info* read_audio_into_buffer(const char* filename) {
 
     AVFormatContext *avFormatContext = NULL;
     // Return code for calls
-    int ret = 0;    
+    int ret = 0;
 
 
     // Auto figure out the codec and audio settings
@@ -217,14 +217,14 @@ audio_info* read_audio_into_buffer(const char* filename) {
     ret = avcodec_open2(c, codec, NULL);
     format_av_error(ret);
 
-/*
-    Set the audio conversion options so it can be pushed into OpenAL
-    OpenAL needs PCM (packed) mono or stero, 8 or 16 bit
-    we just sample to stero for simplicity and keep all the incoming audio settings.
-    If you wish to change the settings for sample rate changes, or layout changes,
-    then changes to the decode method need to account for this
-    See https://ffmpeg.org/doxygen/trunk/group__lswr.html for all the options
-*/
+    /*
+        Set the audio conversion options so it can be pushed into OpenAL
+        OpenAL needs PCM (packed) mono or stero, 8 or 16 bit
+        we just sample to stero for simplicity and keep all the incoming audio settings.
+        If you wish to change the settings for sample rate changes, or layout changes,
+        then changes to the decode method need to account for this
+        See https://ffmpeg.org/doxygen/trunk/group__lswr.html for all the options
+    */
     SwrContext *swr = swr_alloc_set_opts(
         NULL,
         AV_CH_LAYOUT_STEREO,
