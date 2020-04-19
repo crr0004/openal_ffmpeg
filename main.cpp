@@ -6,11 +6,8 @@
 
 int main(int argc, char const *argv[])
 {
-    std::uint8_t *out;
-    std::size_t outSize;
-
     audio_info *stream = read_audio_into_buffer(
-            "short.mp3"
+            "airtoneresonance1.mp3"
         );
 
     init_openal();

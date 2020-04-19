@@ -172,7 +172,6 @@ void dump_format_context(AVFormatContext *avFormatContext){
 		printf("Stream %d\tcodec: %d\n", i, avFormatContext->streams[i]->codecpar->codec_id);
 		pCodecContext = avFormatContext->streams[i]->codecpar;
 		AVCodec *pCodec;
-		AVDictionary *options;
 
 		//Find the decoder for the audio stream
 		pCodec = avcodec_find_decoder(pCodecContext->codec_id);
@@ -272,7 +271,8 @@ audio_info* read_audio_into_buffer(const char* filename) {
  * returns the new buffer ID.
  */
 ALuint load_sound(audio_info info) {
-    ALenum err, format;
+
+	ALenum err;
     ALuint buffer;
     const buf_type *membuf;
     ALsizei num_bytes;
@@ -343,11 +343,14 @@ ALCcontext* init_openal(){
     return ctx;
 }
 void al_nssleep(unsigned long nsec){
+#ifndef _MSC_VER
     struct timespec ts, rem;
     ts.tv_sec = (time_t)(nsec / 1000000000ul);
     ts.tv_nsec = (long)(nsec % 1000000000ul);
+
     while(nanosleep(&ts, &rem) == -1 && errno == EINTR)
         ts = rem;
+#endif
 }
 
 void play_sound(ALuint buffer){
