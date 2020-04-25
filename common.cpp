@@ -183,7 +183,9 @@ void dump_format_context(AVFormatContext *avFormatContext){
 
 audio_info* read_audio_into_buffer(const char* filename) {
 
-    AVFormatContext *avFormatContext = NULL;
+    av_log_set_level(AV_LOG_TRACE);
+    AVFormatContext *avFormatContext = nullptr;
+    AVCodecParameters *codec_context = nullptr;
     // Return code for calls
     int ret = 0;
 
@@ -196,22 +198,27 @@ audio_info* read_audio_into_buffer(const char* filename) {
     ret = avformat_find_stream_info(avFormatContext, NULL);
 	format_av_error(ret);
 
-	dump_format_context(avFormatContext);
+	// dump_format_context(avFormatContext);
 
     // We assume the first stream is the audio stream
     // This can be replaced with a call to find_best_stream
-	AVCodecParameters *codec_context = avFormatContext->streams[0]->codecpar;
+	codec_context = avFormatContext->streams[0]->codecpar;
     format_av_error(codec_context, "Could not find stream 0");
     
     // Grab the codec ID for the stream
-	AVCodec *codec = avcodec_find_decoder(codec_context->codec_id);
+	AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_VORBIS);
     format_av_error(codec, "Could not find codec");
 
-    AVCodecParserContext* parser = av_parser_init(codec->id);
-    format_av_error(parser, "Could not create parser");
+    // ret = av_seek_frame(avFormatContext, -1, 0, AVSEEK_FLAG_BACKWARD);
+    // format_av_error(ret);
+
+    // AVCodecParserContext* parser = av_parser_init(codec->id);
+    // format_av_error(parser, "Could not create parser");
 
     AVCodecContext *c = avcodec_alloc_context3(codec);
     format_av_error(c, "Could not alloc codec");
+
+    avcodec_parameters_to_context(c, codec_context);
 
     ret = avcodec_open2(c, codec, NULL);
     format_av_error(ret);
@@ -255,6 +262,7 @@ audio_info* read_audio_into_buffer(const char* filename) {
     info->buffer_size = stream->tellp();
 
     swr_close(swr);
+    avformat_close_input(&avFormatContext);
     avcodec_free_context(&c);
     avformat_free_context(avFormatContext);
 

@@ -7,7 +7,7 @@
 int main(int argc, char const *argv[])
 {
     audio_info *stream = read_audio_into_buffer(
-            "airtoneresonance1.mp3"
+            "magical_night.ogg"
         );
 
     init_openal();
